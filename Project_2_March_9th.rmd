@@ -1,0 +1,229 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+---
+
+```{r setup, include=FALSE, warnings = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#install.packages("MatchIt")
+#install.packages("optmatch")
+#install.packages("gridExtra")
+require(optmatch)
+require(MatchIt)
+require('gridExtra') 
+require(tidyverse)
+require('ggplot2')
+
+```
+
+
+```{r, include=FALSE, warnings = FALSE}
+
+data <- read.csv("KOI.csv")
+df <- as_tibble(data)
+df <- df  %>% filter(!is.na(koi_disposition))
+
+```
+
+
+```{r, include=FALSE, warnings = FALSE}
+
+require(dplyr)
+# assuming your data frame is called df
+
+#colSums(is.na(df))
+
+df <- df %>% select(-koi_teq_err1, -koi_teq_err2)
+df <- df %>% mutate(train = ifelse(koi_disposition != "CANDIDATE", 0, 1))
+
+df <- df %>% filter(!is.na(koi_prad)) %>% filter(!is.na(koi_period)) %>% filter(!is.na(koi_impact)) %>% filter(!is.na(koi_depth)) 
+df_t <- df 
+
+# df_train <- df %>% filter(koi_disposition != "CANDIDATE")
+# df_test <- df %>% filter(koi_disposition == "CANDIDATE")
+
+```
+
+
+# Demonstrating lack of exchangeability
+
+We first check the balance beetween the labeled and unlabeled data to see if exchangeability holds. For the four variables that were the most used in classification during exploratory analysis we find large differences between the datasets, which suggest a violation of exchangeability. The variables we look at are koi_prod, koi_period, koi_impact, and koi_depth. Each variable has imbalance as assessed by difference in means, variance ratio, standardized mean differrence, and eCDF. We summarize the imbalances with a table below. 
+
+
+```{r, warnings = FALSE}
+
+
+
+
+# Create formula for matching based on train variable and covariates
+
+formula <- train ~ koi_prad + koi_period + koi_impact + koi_depth
+
+# Checking balance 
+
+match_object_before <- matchit(formula, data = df, method = NULL, distance="glm")
+summary(match_object_before)
+
+
+```
+
+### Remedying the imblance using nearest neighbors
+
+We try several different matching techniques. The first is greedy nearest neighbor matching, which involves calculating the distance between every treated unit and control unit. Then, one at a time, each treated unit is paired with a control unit as its match. The matching process is "greedy" because it doesn't optimize. Each match is made without considering any potential matches that may come later in the process. In the table below and in the graph densities we see a much better balance between the covariates, although they are still not ideal.
+
+
+```{r, warnings = FALSE}
+
+# Create MatchIt object using nearest neighbor matching
+match_object <- matchit(formula, data = df, method = "nearest")
+
+# Summarize the MatchIt object
+summary(match_object)
+plot(summary(match_object))
+
+# Plot
+plot(match_object, type = "jitter", interactive = FALSE)
+
+# Extract matched data
+matched_data_nearest <- match.data(match_object)
+
+```
+```{r, echo=FALSE, warnings = FALSE}
+
+df <- matched_data_nearest
+
+
+plot1_after <- ggplot(df, aes(x = koi_prad, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 20) 
+
+plot2_after <- ggplot(df, aes(x = koi_period, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 150) 
+
+
+
+plot3_after <- ggplot(df, aes(x = koi_depth, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 2500) 
+
+
+plot4_after <- ggplot(df, aes(x = koi_impact, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 2.5)
+  
+grid.arrange(plot1_after, plot2_after, plot3_after, plot4_after,ncol = 1)
+
+
+```
+
+### Trying alternative approaches to matching
+
+Below we try two improvements to the matching procedure. First, we try an "optimal" procedure that minimizes the sum of the absolute pairwise distances in teh matched sample. Then we perform optimal full matching, in which all units, both unlabeled and labeled, receive at least one match. The optimal procedure is a downsampling methethod and the full matching procedure is an upsampling mthod, which samples with replacement. Upsampling and downsampling are strategies to deal with imbalanced data sets where one group is much larger than the other. Upsampling means increasing the size of the smaller group by duplicating or creating new observations, while downsampling means decreasing the size of the larger group by removing or combining observations.
+
+## Optimal
+
+
+```{r, echo=FALSE, warnings = FALSE}
+
+#formula <- train ~ koi_prad + koi_period + koi_impact + koi_depth
+df <- df_t 
+# Create MatchIt object using nearest neighbor matching
+match_object <- matchit(formula, data = df, method = "optimal")
+
+#par(c(1,1))
+
+# Summarize the MatchIt object
+summary(match_object)
+plot(summary(match_object))
+```
+
+```{r, echo=FALSE, warnings = FALSE}
+# Plot
+plot(match_object, type = "jitter", interactive = FALSE)
+
+#grid.arrange(plot_1, plot_2, ncol=1)
+
+# Extract matched data
+matched_data_optimal <- match.data(match_object)
+
+```
+
+```{r, echo=FALSE, warnings = FALSE}
+
+df <- matched_data_optimal
+
+
+plot1_after <- ggplot(df, aes(x = koi_prad, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 20) 
+
+plot2_after <- ggplot(df, aes(x = koi_period, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 150) 
+
+
+
+plot3_after <- ggplot(df, aes(x = koi_depth, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 2500) 
+
+
+plot4_after <- ggplot(df, aes(x = koi_impact, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 2.5)
+  
+grid.arrange(plot1_after, plot2_after, plot3_after, plot4_after,ncol = 1)
+
+
+
+```
+
+## Full
+
+```{r, echo=FALSE, warnings = FALSE}
+df <- df_t 
+
+#formula <- train ~ koi_prad + koi_period + koi_impact + koi_depth
+
+
+#plot(summary(match_object_before))
+
+# Create MatchIt object using nearest neighbor matching
+match_object <- matchit(formula, data = df, method = "full")
+
+
+# Summarize the MatchIt object
+summary(match_object)
+#plot_1 <- 
+plot(summary(match_object))
+```
+.
+```{r, echo=FALSE, warnings = FALSE}
+# Plot
+#plot_2 <- 
+plot(match_object, type = "jitter", interactive = FALSE)
+
+# Extract matched data
+matched_data_full <- match.data(match_object)
+
+#grid.arrange(plot_1, plot_2, ncol=1)
+
+```
+```{r, echo=FALSE, warnings = FALSE}
+
+df <- matched_data_full
+
+
+plot1_after <- ggplot(df, aes(x = koi_prad, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 20) 
+
+plot2_after <- ggplot(df, aes(x = koi_period, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 150) 
+
+
+
+plot3_after <- ggplot(df, aes(x = koi_depth, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 2500) 
+
+
+plot4_after <- ggplot(df, aes(x = koi_impact, fill= factor(train))) +  geom_density(na.rm = TRUE, position="identity", alpha = 0.5) + xlim(0, 2.5)
+  
+grid.arrange(plot1_after, plot2_after, plot3_after, plot4_after,ncol = 1)
+
+
+```
+
+With full matching, we see that often a labeled observation is matched to multiple unlabeled observations, i.e., upsampling. For further analysis we prefer the downsampled sample because it preserves the general trend of the signal (although it increases uncertainty by removing many labeled observations).
+
+```{r, echo = FALSE, warnings = FALSE}
+
+ggplot(matched_data_full %>% group_by(subclass) %>% summarize(n = n()) %>% arrange(desc(n)), aes(x=subclass, y=n)) + geom_bar(stat = "identity", fill = "blue")
+
+```
+
+

@@ -1,0 +1,59 @@
+---
+title: "Covariate Shift"
+output: pdf_document
+date: "2023-03-07"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+In this project, we try to build a classifier to predict whether whether CANDIDATE unlabeled test points are likely to be a real exoplanet based on other observed characteristics. We focus on trying to estimate the accuracy of a classifier. Due to issues of covariate shift, the accuracy of the classifier on a labeled holdout set may not be the same as the accuracy we would get on the unlabeled test set. 
+
+Initially, we thought of applying conformal inference methods to quantify uncertainty of our classifier where instead of using residuals as the conformal score, we tried to find a different score function that is appropriate for a categorical variable. However, we soon realized that this was not the best approach because as a binary classification problem, it would not make much sense to predict a set of labels. Typically utilizing conformal inference for classification problems means that instead of a prediction interval, we would get a set of likely labels. For this problem, there are only two possible labels, confirmed or false positive. If we try to get 1-alpha coverage, our interval we may end up with both potential labels which would not tell us much about the accuracy of the classifier.
+
+Another issue with conformal inference methods is that even if they could guarantee a 1-alpha coverage, they require exchangeability of train and test points. Even if the train and test datasets have the same distribution of Y conditional on X, the distributions of X may differ which means the exchangeability assumption would not hold.
+
+## Checking for covariate shift
+
+We attempt see whether there is a significant difference between the distribution of the covariates in the labeled (train) and unlabeled (test) sets. The first thing we try is to fit a classification model across the entire dataset to predict whether a data point is labeled or unlabeled. If the classifier is able to distinguish between labeled and unlabeled points, then that suggests that the two have different distributions and therefore are not exchangeable. From running gradient boosting with 10 fold cross validation, we see that the model has a 77% accuracy. Since this is much higher than 50%, and the classifier is able to predict quite well whether a data point is labeled or unlabeled, it suggests there is quite a significant difference between the two distributions. Next, we try to find out whether there are specific covariates that have different distributions between the labeled and unlabeled data.
+
+```{r}
+# This chunk is directly taken from file "ConformalWeights"
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")]
+new_df = koi_df %>%
+                  mutate(koi_disposition = recode(koi_disposition,
+                                  "CONFIRMED" = "NC",
+                                  "FALSE POSITIVE" = "NC",
+                                  "CANDIDATE" = "C"))
+analysis_df$koi_disposition = as.factor(new_df$koi_disposition)
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r}
+# This chunk is directly taken from file "ConformalWeights"
+set.seed(123)
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           ## repeated ten times
+                           repeats = 1)
+
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 metric = "ROC",
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+koi_pred <- predict(gbmFit1, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+``` 

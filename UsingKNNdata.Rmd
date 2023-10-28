@@ -1,0 +1,120 @@
+---
+title: "Using the Nearest Neighbor dataset"
+output: pdf_document
+date: "2023-03-08"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Using the nearest neighbor dataset
+
+After using nearest neighbors to get matched testpoints, we check again for exchangeability by seeing whether a classifier can accurately predict whether a datapoint is labeled or unlabeled. We see that the accuracy has gone down significantly to 63% suggesting that our matched dataset is more likely to have exchangeability with our unlabeled test data.
+
+```{r}
+koi_df = read.csv("KOI.csv")
+#koi_df = koi_df[!duplicated(koi_df$kepid), ]
+test_set = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+test_set = test_set[complete.cases(test_set), ]
+```
+
+```{r pressure, echo=FALSE}
+matched_data_nearest = matched_data_nearest[matched_data_nearest$koi_disposition != "CANDIDATE",]
+write.csv(matched_data_nearest,"matched_data_nearest.csv")
+total = bind_rows(test_set, matched_data_nearest)
+total = total[,1:14]
+```
+
+```{r}
+# This chunk is directly taken from file "ConformalWeights"
+set.seed(123)
+new_df = total %>%
+                  mutate(koi_disposition = recode(koi_disposition,
+                                  "CONFIRMED" = "NC",
+                                  "FALSE POSITIVE" = "NC",
+                                  "CANDIDATE" = "C"))
+total$koi_disposition = as.factor(new_df$koi_disposition)
+analysis_df = total[complete.cases(total), ]
+
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           ## repeated ten times
+                           repeats = 1)
+
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 metric = "ROC",
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+koi_pred <- predict(gbmFit1, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+``` 
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+```
+
+```{r}
+# Fitting gradient boosting takes around 5 minutes
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+koi_pred <- predict(gbmFit1, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+```
+
+Now, we try using the matched data as a holdout set and train a model on the remaining labeled data. When using the matched data as the holdout set, we see a reduction in the accuracy of the gradient boosting classifier. When we initially calculated the accuracy using 10 fold cross validation, we got an accuracy of 90%. When we test the classifier on the matched holdout set, we get a lower level of accuracy at 85%. This is expected because our classifier would not work as well on the test set if there is a distribution shift. Therefore, using a holdout set that is matched to the test data in terms of 4 different covariates seems to get us a more realistic measure of accuracy even if it is lower. However, this method means that we reduce the size of our training set by the points that most resemble the test set which is not ideal as we would like to train the classifier on as much of our training data as possible.
+
+```{r}
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r}
+matched_data_nearest = matched_data_nearest[matched_data_nearest$koi_disposition != "CANDIDATE",]
+validation_set = matched_data_nearest[,1:14]
+
+validation_set$koi_disposition = as.factor(validation_set$koi_disposition)
+validation_set$koi_disposition <- factor(validation_set$koi_disposition, labels = c(1,0))
+#create training set (excluding validation set)
+index = analysis_df$koi_period  %in% validation_set$koi_period
+train_set = analysis_df[!index,]
+```
+
+```{r}
+# Fitting gradient boosting takes around 5 minutes
+gbmFit1 <- train(koi_disposition ~ ., data = train_set, 
+                 method = "gbm", 
+                 verbose = FALSE)
+koi_pred <- predict(gbmFit1, validation_set)
+confusionMatrix(data = koi_pred, validation_set$koi_disposition)
+```

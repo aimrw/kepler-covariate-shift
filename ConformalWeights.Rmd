@@ -1,0 +1,80 @@
+---
+title: "ConformalWeights"
+output: pdf_document
+date: "2023-03-05"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(caret)
+library(gbm)
+library(dplyr)
+```
+
+```{r}
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")]
+new_df = koi_df %>%
+                  mutate(koi_disposition = recode(koi_disposition,
+                                  "CONFIRMED" = "NC",
+                                  "FALSE POSITIVE" = "NC",
+                                  "CANDIDATE" = "C"))
+analysis_df$koi_disposition = as.factor(new_df$koi_disposition)
+#analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+#analysis_df$koi_disposition = as.numeric(as.character(analysis_df$koi_disposition))
+```
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           ## repeated ten times
+                           repeats = 1)
+```
+
+```{r}
+# Fitting gradient boosting takes around 5 minutes
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 metric = "ROC",
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+```
+
+```{r}
+koi_pred <- predict(gbmFit1, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+``` 
+
+```{r}
+gbmImp <- varImp(gbmFit1, scale=FALSE)
+gbmImp
+```
+
+```{r}
+koi_pred
+```
+
+```{r}
+p = predict(gbmFit1, analysis_df,type="prob")
+```
+
+```{r}
+# You still need to do a normalization step after this similar to the last line of code here
+# but I think it has to be relative to the full set of weights you are actually using in your prediction
+w_pre = p$C/p$NC
+# w should be the weights for each point
+#w = w_pre/sum(w_pre)
+```

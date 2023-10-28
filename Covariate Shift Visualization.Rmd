@@ -1,0 +1,179 @@
+---
+title: "Data Visualization"
+author: "Xinmeng Zhang"
+date: "2023-03-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(ggplot2)
+library(gridExtra)
+```
+
+
+# Data Cleaning
+
+Here we only keep the rows that has complete data entries, i.e. without NA values.
+
+```{r}
+koi_df = read.csv("KOI.csv")
+
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+
+```{r}
+test_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+test_df$koi_disposition = as.factor(test_df$koi_disposition)
+test_df = test_df[complete.cases(test_df), ]
+```
+
+
+
+# Check for Covariate Shift
+
+To use the conformal prediction methods that we learned in class, we need to check for the assumption that exchangeability holds. Specifically, the $X_{n+1}, Y_{n+1}$ from the Unlabeled data set should follow the same distribution as $(X_1,Y_1)...(X_n,Y_n), \space i=1,..n$ from the Labeled data set. If the assumption does not hold, we cannot use the methods directly.  
+
+There are multiple ways to check the lack of exchangeability. Here we include 2 methods:  
+1. Visualization including density plots, box plot, and scatter plots of the four covariates that we consider to be the most important in predicting koi_disposition.
+2. Test statistics. We compared the mean variance and ... of the four covariates to check that there is indeed difference in the distribution of the our covariates.
+
+
+### Visualization
+
+Here since the range of the independent values are too large with some as small as around 0, and others as large as around 1000, to make the plot clearer, we apply the logarithmic method on the covariate. For the 9 covariates that we plotted, except for koi_steff and koi_srad that represents the photospheric temperature  and the photospheric radius of the star respectively, all other covariates are different in its distribution to some extent. Later on we tried selecting four most important covarites (koi_period, koi_impact, koi_depth, koi_prad) with respect to their power in explaining the koi_disposition and tried to match their distributions with the Unlabeled set through methods such as nearest neighbor. And we can see that these four covariates indeed have very different distributions compared with Unlabeled dataset and it's meaningful to do the matching.
+
+```{r, warning=FALSE}
+
+p_period <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_period), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_period), fill = "red", alpha = 0.3) +
+  xlab("KOI Period") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_impact <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_impact), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_impact), fill = "red", alpha = 0.3) +
+  xlab("KOI Impact") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_duration <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_duration), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_duration), fill = "red", alpha = 0.3) +
+  xlab("KOI Duration") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_depth <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_depth), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_depth), fill = "red", alpha = 0.3) +
+  xlab("KOI Depth") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_prad <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_prad), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_prad), fill = "red", alpha = 0.3) +
+  xlab("KOI Prad") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_teq <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_teq), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_teq), fill = "red", alpha = 0.3) +
+  xlab("KOI Teq") +
+  ylab("Density") +
+  scale_x_log10()
+
+
+p_steff <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_steff), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_steff), fill = "red", alpha = 0.3) +
+  xlab("KOI Steff") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_insol <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_insol), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_insol), fill = "red", alpha = 0.3) +
+  xlab("KOI insol") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_srad <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_srad), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_srad), fill = "red", alpha = 0.3) +
+  xlab("KOI srad") +
+  ylab("Density") +
+  scale_x_log10()
+
+
+grid.arrange(p_period, p_impact, p_duration, p_depth, p_prad, 
+             p_teq, p_steff, p_insol, p_srad, ncol = 3, nrow=3)
+```
+
+The box plot below also verify that there's difference in distribution of koi_impact between the Labeled and Unlabeled data shown in the mean and variance. Since the information given by the density plot and box plot are pretty similar, here we don't include the rest of the box plot.
+
+
+```{r}
+df = rbind(analysis_df, test_df)
+df$koi_disposition <- ifelse(df$koi_disposition == 0 | df$koi_disposition == 1, "Label", "Unlabel")
+
+ggplot(df, aes(x = koi_disposition, y = koi_period)) +
+  geom_boxplot(aes(fill = koi_disposition)) +
+  scale_y_log10()
+```
+
+It might also be helpful to check whether the relationship differs between two covariates for the Labeled and Unlabeled data. If the relationship differs greatly, it means that the generalizability of the model is not good and the accuracy of the prediction by the model will be low. Here we looked at a few examples of the relationship between the four important covariates.  
+
+From the outcome we can see that most plots displays similar distributions but there are minor differences. For example, for the koi_period vs koi_disposition plot, we see that there's a clear positive linear relationship on the right end of the x axis (when koi_impact is larger) of the Labeled data, but there is none of the Unlabeled data.
+
+
+```{r, warning=FALSE}
+par(mfrow = c(1, 2))
+
+p1 <- ggplot(data=df, aes(x = koi_prad, y = koi_period)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p2 <- ggplot(data=df, aes(x = koi_impact, y = koi_period)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p3 <- ggplot(data=df, aes(x = koi_depth, y = koi_period)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p4 <- ggplot(data=df, aes(x = koi_depth, y = koi_impact)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p5 <- ggplot(data=df, aes(x = koi_depth, y = koi_prad)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p6 <- ggplot(data=df, aes(x = koi_prad, y = koi_impact)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2, nrow=3)
+```
+
+### Test statistics

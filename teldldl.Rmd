@@ -1,0 +1,41 @@
+---
+title: "Weighted Accuracy"
+output: pdf_document
+date: "2023-03-07"
+---
+\pagenumbering{gobble}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(glmnet)
+```
+
+# Weighted Accuracy
+
+Another approach we attempted for quantifying the uncertainty of the classifier involved working from the other direction than a typical conformal method. Instead of determining a margin of error from a fixed accuracy level, we instead tried to find a bound for the accuracy level given a fixed margin of error. The way that this approach would work in the continuous case is that given $\hat u$ and a fixed margin of error $\Delta$ we would try to find the accuracy of $\hat u 	\pm \Delta$. Given a training set with points$1,2,...,n_0$ and a holdout set with points $n_0, n_0 + 1,...,n$, the accuracy to determine would be $\frac {\sum_{i=n_0+1}^{n}1_{Y_i\in\hat u(x_i)\pm\Delta}}{n-n_0}$.
+
+However this approach must be modified for the setting of binary classification. $\Delta$ cannot be a real number since it is meaningless to state that the data point was an exoplanet $\pm\Delta$. The only context in which this sort of approach would make sense if the classification problem were converted into a problem of estimating the probability that the point was in either class. However this simply converts the classification problem into a continuous prediction question and then any weighted version of conformal or split conformal prediction should perform well. Moreover in an actual dataset we will always just have the final classification value - not the probability that the point would fall into that category so converting the binary classifications into probabilities is not useful in practice. 
+
+The above reasoning suggests that we instead need to find a non-numeric representation of a margin of error. The method that we settled on was to take the margin of error as whether the probability outputted from the model was closer to the correct classification than the false classification (taking the classification of "CONFIRMED" as 1 and "FALSE POSITIVE" as 0). In practice, calculating the accuracy of this fixed margin of error ends up being the same as calculating the accuracy rate on held-out data. Held-out data is used as an analogue to split conformal: the differences being that instead of calculating a margin of error given a desired accuracy level we are calculating an accuracy for our margin of error and the margin of error being used is whether the predicted probability is within 0.5 of the real value (either 0 or 1). Since the accuracies outputted by the models lie in (0,1), this ends up being the same as the misclassification rate.
+
+Any difficulty we encountered is that there are no ground-truth value for the unlabeled data. Thus there is no way to truly test the validity of our methods using the given unlabeled data. In order to get a sense for the validity of our methods, we constructed a simulated version of the dataset as is discussed below. This process relied on a key assumption: that the distribution of the response given the covariates was constant between the labeled and unlabeled data. This assumption was necessary as otherwise there would be nothing we could do to determine the accuracy of our model on unlabeled data since the new distribution of $Y_i | X_{i,1}, ...X_{i,n}$ could be arbitrarily different than the original distribution. As a clear example of this say (unknownst to us) the original true distribution of $Y_i | X_{i,1}, ...X_{i,n}$ was $f(X_{i,1}, ...X_{i,n})$ and on the test distribution the true function predicted exactly the opposite label of whatever the original $f(X_{i,1}, ...X_{i,n})$ predicted. Then if we had corrected fit the true model on the training distribution, we would have an accuracy of 0 on the test distribution. In general it is possible to construct a changed function with arbitrarily bad accuracy given our margin of error and so we assume that the true distribution of $f(X_{i,1}, ...X_{i,n})$ is constant for the simulation.
+
+Unfortunately the true $f(X_{i,1}, ...X_{i,n})$ for the dataset is unknown to us, but it can be approximated by fitting a function to a subset of the labeled data. The problem then becomes that we cannot just keep the labels on the labeled data and use the function we fitted to predict the labels on the unlabeled data because then $f(X_{i,1}, ...X_{i,n})$ would be different between the labeled unlabeled data. Instead what we do is use the classifier we fit to create simulated labels for both the remainder of the labeled data not used for training and the unlabeled data. We then use all the data with synthetic labels as a new dataset to estimate covariate shift on. 
+
+Since we are creating the data labels with a much simpler method than the true data-generating method, we took several steps to ensure that the models evaluated on the synthetic data were not able to exactly fit the true $Y_i | X_{i,1}, ...X_{i,n}$. The first step we took to ensure this was to use a logistic regression model which included all interaction terms between covariates to create the synthetic labels and evaluated a logistic regression model without interaction terms on this dataset. We also tuned the regularization parameters of our data generated process to ensure that several interaction terms between covariates displayed relatively large coefficients in relation to the other coefficients present in the model (on the order of $10^{-2}$). These steps ensured that the models being evaluated on this data were not able to perfectly fit the data-generating function.
+
+```{r}
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+
+# Train complex classifier on half_analysis
+half_analysis = analysis_df[1:3000,]
+# Predict the labels on the other half of the labeled data h2_analysis
+h2_analysis = analysis_df[-c(1:3000),]
+# Also subset the unlabeled data
+unlabeled_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+unlabeled_df = unlabeled_df[complete.cases(unlabeled_df), ]
+```

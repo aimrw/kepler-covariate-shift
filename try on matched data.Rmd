@@ -1,0 +1,67 @@
+---
+title: "Try on matched"
+author: "Xinmeng Zhang"
+date: "2023-03-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(caret)
+library(dplyr)
+```
+
+
+Here we use the original data with the portion that does not include the matched dataset as a training set, and do cross validation. Then we fit the model to the matched dataset which is the test set. Then we are able to compare how applying weights to datapoints would improve the accuracy of the model since now the we know the response value of the test dataset that shares similar distribution of the Unlabeled data. 
+
+
+```{r, include=FALSE}
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+
+```{r, include=FALSE}
+test_df <- read.csv("matched_data_nearest.csv")
+test_df$koi_disposition = as.factor(test_df$koi_disposition)
+test_df$koi_disposition <- factor(test_df$koi_disposition, labels = c(1,0))
+test_df <- test_df[, 2:15]
+```
+
+
+```{r, warning=FALSE}
+set.seed(123)
+
+training <- anti_join(analysis_df, test_df)
+testing  <- test_df
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+```
+
+
+```{r, warnings=FALSE, message=FALSE, silent=TRUE, results=HIDE}
+logisticFit <- train(koi_disposition ~ ., data = training, 
+                method="glm",
+                family="binomial",
+                trControl = fitControl)
+```
+
+```{r}
+koi_pred <- predict(logisticFit, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+```
+
+```{r, warnings=FALSE, message=FALSE, silent=TRUE, results=HIDE}
+gbmFit <- train(koi_disposition ~ ., data = training, 
+                method="gbm",
+                trControl = fitControl, 
+                verbose = FALSE)
+koi_pred <- predict(gbmFit, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+```

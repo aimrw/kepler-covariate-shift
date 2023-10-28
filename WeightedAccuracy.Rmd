@@ -1,0 +1,245 @@
+---
+output: pdf_document
+---
+\pagenumbering{gobble}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, include=TRUE)
+library(ggplot2)
+library(glmnet)
+library(caret)
+library(gbm)
+```
+
+# Weighted Accuracy
+
+Another approach we attempted for quantifying the uncertainty of the classifier involved working from the other direction than a typical conformal method. Instead of determining a margin of error from a fixed accuracy level, we instead tried to find a bound for the accuracy level given a fixed margin of error. The way that this approach would work in the continuous case is that given $\hat u$ and a fixed margin of error $\Delta$ we would try to find the accuracy of $\hat u 	\pm \Delta$. Given a training set with points $1,2,...,n_0$ and a holdout set with points $n_0, n_0 + 1,...,n$, the accuracy to determine would be:
+
+$$
+\frac {\sum_{i=n_0+1}^{n}1_{Y_i\in\hat u(x_i)\pm\Delta}}{n-n_0}
+$$
+
+Note that these holdout points are not the points for which we are actually trying to estimate the uncertainty for - they are just the labeled points being held out from training.
+
+However this approach must be modified for the setting of binary classification. $\Delta$ cannot be a real number since it is meaningless to state that the data point was an exoplanet $\pm\Delta$. The only context in which this sort of approach would make sense if the classification problem were converted into a problem of estimating the probability that the point was in either class. However this simply converts the classification problem into a continuous prediction question and then any weighted version of conformal or split conformal prediction should perform well. Moreover in an actual dataset we will always just have the final classification value - not the probability that the point would fall into that category so converting the binary classifications into probabilities is not useful in practice. 
+
+The above reasoning suggests that we instead need to find a non-numeric representation of a margin of error. The method that we settled on was to take the margin of error as whether the probability outputted from the model was closer to the correct classification than the false classification (taking the classification of "CONFIRMED" as 1 and "FALSE POSITIVE" as 0). In practice, calculating the accuracy of this fixed margin of error ends up being the same as calculating the accuracy rate on held-out data. Held-out data is used as an analogue to split conformal: the differences being that instead of calculating a margin of error given a desired accuracy level we are calculating an accuracy for our margin of error and the margin of error being used is whether the predicted probability is within 0.5 of the real value (either 0 or 1). Since the accuracies outputted by the models lie in (0,1), this ends up being the same as the misclassification rate.
+\break
+## Synthetic Data
+
+Any difficulty we encountered is that there are no ground-truth value for the unlabeled data. Thus there is no way to truly test the validity of our methods using the given unlabeled data. In order to get a sense for the validity of our methods, we constructed a simulated version of the dataset as is discussed below. This process relied on a key assumption: that the distribution of the response given the covariates was constant between the labeled and unlabeled data. This assumption was necessary as otherwise there would be nothing we could do to determine the accuracy of our model on unlabeled data since the new distribution of $Y_i | X_{i,1}, ...X_{i,n}$ could be arbitrarily different than the original distribution. As a clear example of this say (unknownst to us) the original true distribution of $Y_i | X_{i,1}, ...X_{i,n}$ was $f(X_{i,1}, ...X_{i,n})$ and on the test distribution the true function predicted exactly the opposite label of whatever the original $f(X_{i,1}, ...X_{i,n})$ predicted. Then if we had corrected fit the true model on the training distribution, we would have an accuracy of 0 on the test distribution. In general it is possible to construct a changed function with arbitrarily bad accuracy given our margin of error and so we assume that the true distribution of $f(X_{i,1}, ...X_{i,n})$ is constant for the simulation.
+
+Unfortunately the true $f(X_{i,1}, ...X_{i,n})$ for the dataset is unknown to us, but it can be approximated by fitting a function to a subset of the labeled data. The problem then becomes that we cannot just keep the labels on the labeled data and use the function we fitted to predict the labels on the unlabeled data because then $f(X_{i,1}, ...X_{i,n})$ would be different between the labeled unlabeled data. Instead what we do is use the classifier we fit to create simulated labels for both the remainder of the labeled data not used for training and the unlabeled data. We then use all the data with synthetic labels as a new dataset to estimate covariate shift on. 
+
+```{r}
+# Initial data processing
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact",
+                       "koi_duration","koi_depth","koi_prad","koi_teq","koi_insol",
+                       "koi_steff","koi_slogg","koi_srad",
+                       "koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+
+# Train complex classifier on half_analysis
+half_analysis = analysis_df[1:3000,]
+# Predict the labels on the other half of the labeled data h2_analysis
+h2_analysis = analysis_df[-c(1:3000),]
+# Also subset the unlabeled data
+unlabeled_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact",
+                        "koi_duration","koi_depth","koi_prad","koi_teq",
+                        "koi_insol","koi_steff","koi_slogg","koi_srad",
+                        "koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+unlabeled_df = unlabeled_df[complete.cases(unlabeled_df), ]
+```
+
+Since we are creating the data labels with a much simpler method than the true data-generating method, we took several steps to ensure that the models evaluated on the synthetic data were not able to exactly fit the true $Y_i | X_{i,1}, ...X_{i,n}$. The first step we took to ensure this was to use a logistic regression model which included all interaction terms between covariates to create the synthetic labels and evaluated a logistic regression model without interaction terms on this dataset. We also tuned the regularization parameters of our data generated process to ensure that several interaction terms between covariates displayed relatively large coefficients in relation to the other coefficients present in the model (on the order of $10^{-2}$). These steps ensured that the models being evaluated on this data were not able to perfectly fit the data-generating function.
+
+```{r}
+set.seed(1)
+# + I(log(koi_period)) + I(log(koi_impact)
+x <- model.matrix(koi_disposition ~ .^2, data = half_analysis)[,-1] # remove intercept column
+y <- half_analysis$koi_disposition
+set.seed(2)
+complex_model <- glmnet(x, y, family = "binomial", alpha = 0.1, lambda = 0.0001)
+```
+
+```{r}
+# Display the coefficients
+#coef(complex_model, s = 0.1)
+```
+
+```{r}
+x_pred <- model.matrix(koi_disposition ~ .^2, data = h2_analysis)[,-1]
+h2_analysis$koi_disposition = factor(as.vector(predict(complex_model,x_pred)) > 0.5, 
+                                     labels = c(0,1))
+x_pred <- model.matrix(koi_disposition ~ .^2, data = unlabeled_df)[,-1]
+unlabeled_df$koi_disposition = factor(as.vector(predict(complex_model,x_pred)) > 0.5,
+                                      labels=c(0,1))
+```
+
+```{r}
+sim_train = h2_analysis[1:1500,]
+sim_test = h2_analysis[-c(1:1500),]
+x <- model.matrix(koi_disposition ~ ., data = sim_train)[,-1] # remove intercept column
+y <- sim_train$koi_disposition
+set.seed(3)
+simple_model <- glmnet(x, y, family = "binomial", alpha = 0.05, lambda = 0.1)
+```
+
+
+```{r}
+# make predictions on sim_test data
+x_test <- model.matrix(koi_disposition ~ ., data = sim_test)[,-1]
+y_test <- sim_test$koi_disposition
+pred_prob <- predict(simple_model, x_test, type = "response")
+
+# classify observations based on a threshold
+threshold <- 0.5
+pred_class <- ifelse(pred_prob > threshold, 1, 0)
+
+# create a confusion matrix and calculate accuracy
+conf_mat <- table(y_test, pred_class)
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+#conf_mat
+#accuracy
+```
+
+```{r}
+# make predictions on sim_test data
+x_test <- model.matrix(koi_disposition ~ ., data = unlabeled_df)[,-1]
+y_test <- unlabeled_df$koi_disposition
+pred_prob <- predict(simple_model, x_test, type = "response")
+
+# classify observations based on a threshold
+threshold <- 0.5
+pred_class <- ifelse(pred_prob > threshold, 1, 0)
+
+# create a confusion matrix and calculate accuracy
+conf_mat <- table(y_test, pred_class)
+accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+#conf_mat
+#accuracy
+```
+
+## Weighting Evaluation
+
+Without accounting for covariate shift, the logistic model without interaction terms achieved 82.83% accuracy on held-out-originally-labeled data and 67.87% accuracy on the synthetic labels for the unlabeled data. This accuracy difference is a clear sign of the change in covariate distribution leading to different uncertainty levels on the training and test data. 
+
+The first way we attempted to solve this was through substituting a weighted accuracy measure instead of the bare accuracy for the uncertainty on the test set. The weights were constructed so as to put higher weight on points similar to the test set and lower weights on point very dissimilar to the test set. This was accomplished through an adopted version of the weighting method used in (Barber et al. 2019).
+
+First a separate logistic regression was fit to predict whether the synthetic data came from the training or test set. The weights were constructed from these probabilities by:
+$$
+w_{i,pre} = \frac{p_i}{1-p_i}
+$$
+
+
+$$
+w_{i} = \frac {(n-n_0) * w_{i,pre}}{\sum_{i=n_0+1}^{n}w_{i,pre}}
+$$
+
+where $p_i$ is the probability that point i is unlabeled, $n-n_0$ is the number of datapoints in the holdout set for the classifier which we desire the uncertainty of, and $w_i$ is the weight to multiply that point by to achieve the weighted accuracy. Thus the weighted accuracy is given by the following equation:
+
+$$
+\frac {\sum_{i=n_0+1}^{n}w_i1_{Y_i\in\hat u(x_i)\pm\Delta}}{n-n_0}
+$$
+```{r}
+weight_1 <- sim_test
+weight_2 <- unlabeled_df
+
+weight_1$koi_disposition = 0
+weight_2$koi_disposition = 1
+weight_df = rbind(weight_1, weight_2)
+weight_df$koi_disposition = factor(weight_df$koi_disposition)
+```
+
+```{r}
+x <- model.matrix(koi_disposition ~ .^2, data = weight_df)[,-1] 
+# remove intercept column
+x_1 <- model.matrix(koi_disposition ~ .^2, data = weight_1)[,-1] 
+# remove intercept column
+y <- weight_df$koi_disposition
+# perform cross-validation with cv.glmnet
+set.seed(4)
+weight_model <- cv.glmnet(x, y, family = "binomial", alpha = 0.05,nfolds=5)
+
+predicted <- predict(weight_model, x, type = "response", s = "lambda.min") 
+# use lambda that gives minimum mean
+
+# classify observations based on a threshold
+threshold <- 0.5
+pred_class <- ifelse(predicted > threshold, 1, 0)
+# create a confusion matrix and calculate accuracy
+conf_mat <- table(y, pred_class)
+sum(diag(conf_mat)) / sum(conf_mat)
+#conf_mat
+```
+
+```{r}
+#gbm_weight_df = weight_df
+#gbm_weight_df$koi_disposition = factor(weight_df$koi_disposition,labels=c("l1","l2"))
+#set.seed(123)
+#trainIndex <- createDataPartition(gbm_weight_df$koi_disposition, p = .8, 
+#                                  list = FALSE, 
+#                                  times = 1)
+
+#training <- gbm_weight_df[ trainIndex,]
+#testing  <- gbm_weight_df[-trainIndex,]
+
+#fitControl <- trainControl(## 10-fold CV
+ #                          method = "repeatedcv",
+#                           number = 5,
+#                           classProbs = TRUE,
+#                           summaryFunction = twoClassSummary,
+                           ## repeated ten times
+#                           repeats = 1)
+#gbmFit1 <- train(koi_disposition ~ ., data = training, 
+#                 metric = "ROC",
+#                 method = "gbm", 
+#                 trControl = fitControl,
+#                 verbose = FALSE)
+```
+
+```{r}
+#label_pred = predict(gbmFit1, testing)
+#confusionMatrix(data = label_pred, testing$koi_disposition)
+#p <- predict(gbmFit1,gbm_weight_model, type = "response")
+```
+
+```{r}
+x_test <- model.matrix(koi_disposition ~ .^2, data = sim_test)[,-1]
+p = predict(weight_model, x_test, type = "response",s="lambda.min")
+# classify observations based on a threshold
+threshold <- 0.5
+
+w_pre = p / (1-p)
+w = length(w_pre)*w_pre/sum(w_pre)
+```
+
+```{r}
+# make predictions on sim_test data
+x_test <- model.matrix(koi_disposition ~ ., data = sim_test)[,-1]
+y_test <- sim_test$koi_disposition
+pred_prob <- predict(simple_model, x_test, type = "response")
+
+# classify observations based on a threshold
+threshold <- 0.5
+pred_class <- ifelse(pred_prob > threshold, 1, 0)
+
+# create a confusion matrix and calculate accuracy
+conf_mat <- table(y_test, pred_class)
+accuracy <- sum(ifelse(pred_prob > threshold, 1, 0) == y_test)/length(y_test)
+weighted_accuracy <- sum((ifelse(pred_prob > threshold, 1, 0) == y_test)*w)/length(y_test)
+#conf_mat
+#accuracy
+#weighted_accuracy
+```
+
+Using this approach, the classifier trained to predict whether a point was labeled or unlabeled was able to achieve 78% prediction accuracy on this task. This again demonstrates the shift in covariate distribution between the labeled and unlabeled data; if the two came from the same distribution the classifier should be able to achieve predictive accuracy of no higher than around 50%. It is unlikely that this accuracy was achieved through overfitting since cross-validation was specifically used for this model to eliminate that issue. 
+
+Using the weights produced from this model, the predicted accuracy for the confidence interval of predicting correctly on the unlabeled data (ie predicting a probability closer to the true value of the synthetic label than not) was estimated at 62.78%. This is a significant improvement on the 83% accuracy estimated without weighting, but still significantly larger than the true accuracy of 66.60%. The reasons for this discrepancy are likely due to the ultimately low accuracy of the model used to produce the weights. Use of a stronger model for fitting the weights (gradient boosting) was also attempted, but the overall accuracy only improved by 3% so the performance of the weights did not change substantially.
+\break
+
+## Matching Evaluation
+
+The second method which was tested for its ability to account for distribution shift between the labeled and unlabeled data was the nearest neighbors approach tried previously. The same procedure as above was run but with the only originally labeled data used as the data selected to be most like the originally unlabeled data. Before additional weighting, the matched data estimated an uncertainty of 78.33% while the actual accuracy on the synthetic data was 66.60%. The difference between estimated and observed uncertainty (~12%) for the matched data was significantly lower than before matching (~16%), but still did not seem to fully correct for the covariate shift. To bridge this additional gap, we applied weighting on top of the matched data, which ended up bringing the estimated accuracy down to 72.40% from the original 78.33%, but still a ways from the true value of ~66%. One major draw-back of this analysis with synthetic data was that the results were highly unstable - small changes in the regularization parameters occasionally lead to dramatic shifts in results. However the parameters given were chosen to ensure that the models would converge and (in the case of the functions used to generate the synthetic labels) such that they had large coefficients for interaction terms. Regularization values of alpha = 0.05 and lambda = 0.1 were used when possible.

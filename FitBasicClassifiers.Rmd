@@ -1,0 +1,82 @@
+---
+title: "BasicDataExploration"
+output: pdf_document
+date: "2023-03-01"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(caret)
+library(gbm)
+```
+
+```{r}
+koi_df = read.csv("KOI.csv")
+#koi_df = koi_df[!duplicated(koi_df$kepid), ]
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r}
+head(analysis_df)
+```
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 10)
+```
+```{r}
+# Fitting gradient boosting takes around 5 minutes
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+```
+
+```{r}
+koi_pred <- predict(gbmFit1, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+gbmImp <- varImp(gbmFit1, scale=FALSE)
+gbmImp
+```
+Since the variables koi_prad, koi_period, koi_depth and koi_impact are the most important covariates, we explore those in greater depth when checking the distribution. 
+
+# Logistic Regression
+
+```{r, warnings=FALSE, message=FALSE}
+# I get errors when running but they don't seem to effect the accuracy so I'll
+# ignore them for now
+logisticFit <- train(koi_disposition ~ ., data = training, 
+                method="glm",
+                family="binomial",
+                trControl = fitControl)
+koi_pred <- predict(logisticFit, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+```
+
+```{r}
+# Warning!!! Fitting this random forest takes like 40 minutes
+RandomForestFit <- train(koi_disposition ~ ., data = training, 
+                 method = 'rf', 
+                 trControl = fitControl)
+koi_pred <- predict(RandomForestFit, testing)
+confusionMatrix(data = koi_pred, testing$koi_disposition)
+```
+```{r}
+# Save the currently fit models
+save.image(file="fitClassifiers.RData") 
+```

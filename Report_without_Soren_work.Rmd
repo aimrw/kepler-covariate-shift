@@ -1,0 +1,548 @@
+---
+title: "Project 2 Data Option"
+output: pdf_document
+date: "2023-03-08"
+---
+
+\pagenumbering{gobble}
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warnings=FALSE, message=FALSE)
+library(ggplot2)
+library(caret)
+library(gbm)
+library(ggplot2)
+library(gridExtra)
+library(dplyr)
+require(optmatch)
+require(MatchIt)
+require('gridExtra') 
+require(tidyverse)
+require('ggplot2')
+```
+
+In this project, we try to build a classifier to predict whether the unlabeled test points that are currently identified as "CANDIDIATE" are likely to be a real exoplanet based on other observed characteristics. Our main focus is estimating the uncertainty and accuracy of the classifier.
+
+Initially, we thought of applying conformal inference methods to quantify uncertainty of our classifier. Instead of using residuals as the conformal score, we tried to find a different score function that is appropriate for categorical variables. We define the score as the negative of the logistic regression outcome. This is because the higher the score is, for example the residual, the worse the prediction is, while a larger logit model output means a better predictive power. Therefore choosing negative of the logistic regression outcome would align with the meaning of the scores that we want. However, we soon realized that this was not the best approach because for a binary classification problem, it would not make much sense to predict a set of labels. Typically utilizing conformal inference for classification problems means that instead of a prediction interval, we would get a set of likely labels. For this problem, there are only two possible labels, confirmed or false positive. If we try to get $1-\alpha$ coverage, our interval we may end up with both potential labels which would not tell us much about the accuracy of the classifier.
+
+Another issue with conformal inference methods is that even if they could guarantee a $1-\alpha$ coverage, they require exchangeability of train and test points. Even if the train and test datasets have the same distribution of Y conditional on X, the distributions of X may differ which means the exchangeability assumption would not hold.
+
+# Exploration
+
+We did some initial data cleaning, removing rows with NA values and keeping only the rows that has complete data entries.
+
+We then try two classifiers, logistic regression and gradient boosting. We calculate the accuracy of the two classifiers by using 10 fold cross validation and find that logistic regression has 76% accuracy and gradient boosting has 90% accuracy. We also check for feature importance and see that the variables koi_prad, koi_period, koi_depth and koi_impact are the most important covariates in predicting whether the object is an exoplanet or not. However, it's worth mentioning that these accuracy numbers are actually not a good estimate for the accuracy of the classifier on the unlabeled test set because our train and test set does not have exchangeability and the covariates’ distributions differ. Later we will explore the covariate shift in greater depth by checking their distributions. 
+
+```{r}
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r}
+set.seed(123)
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           ## repeated ten times
+                           repeats = 1)
+```
+
+```{r}
+# Fitting gradient boosting takes around 5 minutes
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+```
+
+```{r}
+koi_pred <- predict(gbmFit1, testing)
+#confusionMatrix(data = koi_pred, testing$koi_disposition)
+gbmImp <- varImp(gbmFit1, scale=FALSE)
+#gbmImp
+```
+
+```{r, warnings=FALSE, message=FALSE, silent=TRUE, results='hide'}
+suppressWarnings(logisticFit <- train(koi_disposition ~ ., data = training, 
+                method="glm",
+                family="binomial",
+                trControl = fitControl))
+```
+
+```{r}
+koi_pred <- predict(logisticFit, testing)
+#confusionMatrix(data = koi_pred, testing$koi_disposition)
+```
+
+# Checking for covariate shift
+
+As discussed earlier, to use the conformal prediction methods that we learned in class, we need to check for the assumption that exchangeability holds. Specifically, the $X_{n+1}, Y_{n+1}$ from the Unlabeled data set should follow the same distribution as $(X_1,Y_1)...(X_n,Y_n), \space i=1,..n$ from the Labeled data set. If the assumption does not hold, we need to find new ways of determining the accuracy of the classifier on the test set such as assigning weights on the data points based on some criteria.
+
+We attempt to see whether there are significant differences between the distributions of the covariates in the labeled (train) and unlabeled (test) sets. The first thing we try is to fit a classification model across the entire dataset to predict whether a data point is labeled or unlabeled. If the classifier is able to distinguish between labeled and unlabeled points, then it suggests that the two data sets have different distributions and therefore are not exchangeable. 
+
+From running gradient boosting with 10 fold cross validation, we see that the model has 77% accuracy. Since this is much higher than 50%, and the classifier is able to predict quite well whether a data point is labeled or unlabeled, it suggests there is quite a significant difference between the two distributions. Next, we try to find out whether there are specific covariates that have different distributions between the labeled and unlabeled data.
+
+```{r, include=FALSE}
+# This chunk is directly taken from file "ConformalWeights" file
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")]
+new_df = koi_df %>%
+                  mutate(koi_disposition = recode(koi_disposition,
+                                  "CONFIRMED" = "NC",
+                                  "FALSE POSITIVE" = "NC",
+                                  "CANDIDATE" = "C"))
+analysis_df$koi_disposition = as.factor(new_df$koi_disposition)
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r}
+# This chunk is directly taken from file "ConformalWeights" file
+set.seed(123)
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           ## repeated ten times
+                           repeats = 1)
+
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 metric = "ROC",
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+koi_pred <- predict(gbmFit1, testing)
+#confusionMatrix(data = koi_pred, testing$koi_disposition)
+``` 
+
+# Determining which covariates shifted
+
+```{r, include=FALSE}
+koi_df = read.csv("KOI.csv")
+
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r, include=FALSE}
+test_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+test_df$koi_disposition = as.factor(test_df$koi_disposition)
+test_df = test_df[complete.cases(test_df), ]
+```
+
+There are multiple ways to check for which covariate have a different distribution in the train and test set. Here we include 2 methods: 
+
+1. Visualization including density plots of all covariates that we're interested in, box plot, and scatter plots of pairwise relationship of the four covariates that we consider to be the most important in predicting koi_disposition.  
+
+2. Test statistics. We compared the characteristics such as mean, variance, ecdf etc. of the four covariates to check that there is indeed difference in the distribution.
+
+
+## Visualization
+
+Here since the range of the independent values are too large with some values as small as around 0, and others as large as around 1000, to make the plot clearer, we apply the logarithmic method on the covariate. For the 9 covariates that we plotted, except for koi_steff and koi_srad, representing the photospheric temperature  and the photospheric radius of the star respectively, seem to show a roughly same distribution, all other covariates are different in their distribution to some extent. Later on we tried selecting four most important covarites (koi_period, koi_impact, koi_depth, koi_prad) with respect to their power in explaining the koi_disposition and tried to match their distributions with the Unlabeled set through methods such as nearest neighbor. And we can see that these four covariates indeed have very different distributions compared with Unlabeled dataset and it's meaningful to do the matching.
+
+```{r, warning=FALSE, echo=TRUE}
+
+p_period <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_period), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_period), fill = "red", alpha = 0.3) +
+  xlab("KOI Period") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_impact <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_impact), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_impact), fill = "red", alpha = 0.3) +
+  xlab("KOI Impact") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_duration <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_duration), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_duration), fill = "red", alpha = 0.3) +
+  xlab("KOI Duration") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_depth <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_depth), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_depth), fill = "red", alpha = 0.3) +
+  xlab("KOI Depth") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_prad <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_prad), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_prad), fill = "red", alpha = 0.3) +
+  xlab("KOI Prad") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_teq <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_teq), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_teq), fill = "red", alpha = 0.3) +
+  xlab("KOI Teq") +
+  ylab("Density") +
+  scale_x_log10()
+
+
+p_steff <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_steff), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_steff), fill = "red", alpha = 0.3) +
+  xlab("KOI Steff") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_insol <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_insol), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_insol), fill = "red", alpha = 0.3) +
+  xlab("KOI insol") +
+  ylab("Density") +
+  scale_x_log10()
+
+p_srad <- ggplot() +
+  geom_density(data = analysis_df, aes(x = koi_srad), fill = "blue", alpha = 0.3) +
+  geom_density(data = test_df, aes(x = koi_srad), fill = "red", alpha = 0.3) +
+  xlab("KOI srad") +
+  ylab("Density") +
+  scale_x_log10()
+
+
+grid.arrange(p_period, p_impact, p_duration, p_depth, p_prad, 
+             p_teq, p_steff, p_insol, p_srad, ncol = 3, nrow=3)
+```
+
+The box plot below also verify that there's difference in distribution of koi_impact between the Labeled and Unlabeled data shown in the mean and variance. Since the information given by the density plot and box plot are pretty similar, here we don't include the rest of the box plot.
+
+
+```{r, echo=TRUE}
+df = rbind(analysis_df, test_df)
+df$koi_disposition <- ifelse(df$koi_disposition == 0 | df$koi_disposition == 1, "Label", "Unlabel")
+
+ggplot(df, aes(x = koi_disposition, y = koi_period)) +
+  geom_boxplot(aes(fill = koi_disposition)) +
+  scale_y_log10()
+```
+
+It might also be helpful to check whether the relationship differs between two covariates for the Labeled and Unlabeled data. If the relationship differs greatly, it means that the generalizability of the model is not good and the accuracy of the prediction by the model will be low. Here we looked at a few examples of the relationship between the four important covariates.  
+
+From the outcome we can see that most plots displays similar distributions but there are minor differences. For example, for the koi_period vs koi_disposition plot, we see that there's a clear positive linear relationship on the right end of the x axis (when koi_impact is larger) of the Labeled data, but there is none of the Unlabeled data.
+
+```{r, warning=FALSE, echo=TRUE}
+par(mfrow = c(1, 2))
+
+p1 <- ggplot(data=df, aes(x = koi_prad, y = koi_period)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p2 <- ggplot(data=df, aes(x = koi_impact, y = koi_period)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p3 <- ggplot(data=df, aes(x = koi_depth, y = koi_period)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p4 <- ggplot(data=df, aes(x = koi_depth, y = koi_impact)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p5 <- ggplot(data=df, aes(x = koi_depth, y = koi_prad)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+p6 <- ggplot(data=df, aes(x = koi_prad, y = koi_impact)) +
+  geom_point(aes(color = koi_disposition)) +
+  facet_wrap(~koi_disposition) +
+  scale_x_log10() +
+  scale_y_log10()
+
+grid.arrange(p1, p2, p3, p4, p5, p6, ncol = 2, nrow=3)
+```
+
+```{r, include=FALSE}
+#install.packages("MatchIt")
+#install.packages("optmatch")
+#install.packages("gridExtra")
+#require(optmatch)
+#require(MatchIt)
+#require('gridExtra') 
+#require(tidyverse)
+#require('ggplot2')
+```
+
+```{r, include=FALSE}
+data <- read.csv("KOI.csv")
+df <- as_tibble(data)
+df <- df  %>% filter(!is.na(koi_disposition))
+```
+
+```{r, include=FALSE}
+require(dplyr)
+df = df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")]
+df = df[complete.cases(df), ]
+df <- df %>% mutate(train = ifelse(koi_disposition != "CANDIDATE", 0, 1))
+df_t <- df
+```
+
+Then we check the balance between the labeled and unlabeled data. For the four variables that were the most used in classification during exploratory analysis we find large differences between the datasets, confirming the fact that their distributions are different as we observed in the visualization. The variables we look at are koi_prod, koi_period, koi_impact, and koi_depth. Each variable has imbalance as assessed by difference in means, variance ratio, standardized mean differrence, and eCDF. We summarize the imbalances with a table below. 
+
+```{r}
+# Create formula for matching based on train variable and covariates
+
+formula <- train ~ koi_prad + koi_period + koi_impact + koi_depth
+
+# Checking balance 
+
+match_object_before <- matchit(formula, data = df, method = NULL, distance="glm")
+summary(match_object_before)
+```
+
+# K Nearest Neighbor matching to create a holdout set similar to the test set
+
+We try several different matching techniques. The first is greedy nearest neighbor matching, which involves calculating the distance between every treated unit and control unit. Then, one at a time, each treated unit is paired with a control unit as its match. The matching process is "greedy" because it doesn't optimize. Each match is made without considering any potential matches that may come later in the process. In the table below and in the graph densities we see a much better balance between the covariates, although they are still not ideal.
+
+
+```{r}
+
+# Create MatchIt object using nearest neighbor matching
+match_object <- matchit(formula, data = df, method = "nearest")
+
+# Summarize the MatchIt object
+summary(match_object)
+plot(summary(match_object))
+```
+
+```{r, warnings = FALSE}
+# Plot
+plot(match_object, type = "jitter", interactive = FALSE)
+
+# Extract matched data
+matched_data_nearest <- match.data(match_object)
+
+```
+
+```{r, echo=TRUE, warning=FALSE, }
+
+df <- matched_data_nearest
+
+plot1_after <- ggplot(df, aes(x = koi_prad, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 20) 
+
+plot2_after <- ggplot(df, aes(x = koi_period, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 150) 
+
+plot3_after <- ggplot(df, aes(x = koi_depth, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 2500) 
+
+plot4_after <- ggplot(df, aes(x = koi_impact, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 2.5)
+  
+grid.arrange(plot1_after, plot2_after, plot3_after, plot4_after,ncol = 1)
+
+```
+
+## Trying alternative approaches to matching
+
+Below we try two improvements to the matching procedure. First, we try an "optimal" procedure that minimizes the sum of the absolute pairwise distances in teh matched sample. Then we perform optimal full matching, in which all units, both unlabeled and labeled, receive at least one match. The optimal procedure is a downsampling methethod and the full matching procedure is an upsampling mthod, which samples with replacement. Upsampling and downsampling are strategies to deal with imbalanced data sets where one group is much larger than the other. Upsampling means increasing the size of the smaller group by duplicating or creating new observations, while downsampling means decreasing the size of the larger group by removing or combining observations.
+
+
+## Optimal
+
+```{r, echo=TRUE}
+#This chunk takes about 5 mins to run
+#formula <- train ~ koi_prad + koi_period + koi_impact + koi_depth
+df <- df_t 
+# Create MatchIt object using nearest neighbor matching
+match_object <- matchit(formula, data = df, method = "optimal")
+
+# Summarize the MatchIt object
+summary(match_object)
+plot(summary(match_object))
+```
+```{r, warnings=FALSE}
+# Plot
+plot(match_object, type = "jitter", interactive = FALSE)
+
+# Extract matched data
+matched_data_optimal <- match.data(match_object)
+
+```
+
+```{r, echo=TRUE}
+
+df <- matched_data_optimal
+
+plot1_after <- ggplot(df, aes(x = koi_prad, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 20) 
+
+plot2_after <- ggplot(df, aes(x = koi_period, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 150) 
+
+plot3_after <- ggplot(df, aes(x = koi_depth, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 2500) 
+
+plot4_after <- ggplot(df, aes(x = koi_impact, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 2.5)
+  
+grid.arrange(plot1_after, plot2_after, plot3_after, plot4_after,ncol = 1)
+
+```
+
+## Full
+
+```{r, echo=TRUE, , warnings=FALSE}
+# This took around 5 minutes to run
+
+df <- df_t 
+
+#formula <- train ~ koi_prad + koi_period + koi_impact + koi_depth
+
+#plot(summary(match_object_before))
+
+# Create MatchIt object using nearest neighbor matching
+match_object <- matchit(formula, data = df, method = "full")
+
+# Summarize the MatchIt object
+summary(match_object)
+plot(summary(match_object))
+```
+```{r, warnings=FALSE}
+# Plot
+plot(match_object, type = "jitter", interactive = FALSE, ncol = 1)
+
+# Extract matched data
+matched_data_full <- match.data(match_object)
+
+```
+
+```{r, echo=TRUE, warning=FALSE}
+
+df <- matched_data_full
+
+plot1_after <- ggplot(df, aes(x = koi_prad, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 20) 
+
+plot2_after <- ggplot(df, aes(x = koi_period, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 150) 
+
+
+
+plot3_after <- ggplot(df, aes(x = koi_depth, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 2500) 
+
+
+plot4_after <- ggplot(df, aes(x = koi_impact, fill= factor(train))) +  geom_density(position="identity", alpha = 0.5) + xlim(0, 2.5)
+  
+grid.arrange(plot1_after, plot2_after, plot3_after, plot4_after,ncol = 1)
+
+
+```
+
+With full matching, we see that often a labeled observation is matched to multiple unlabeled observations, i.e., upsampling. For further analysis we prefer the downsampled sample because it preserves the general trend of the signal (although it increases uncertainty by removing many labeled observations).
+
+```{r, echo = FALSE, warning=FALSE}
+ggplot(matched_data_full %>% group_by(subclass) %>% summarize(n = n()) %>% arrange(desc(n)), aes(x=subclass, y=n)) + geom_bar(stat = "identity", fill = "blue")
+```
+
+# Using the matched dataset
+
+After using nearest neighbors to create a matched dataset, we check again for exchangeability once more by seeing whether a classifier can accurately predict whether a datapoint is labeled or unlabeled. We see that the accuracy has gone down significantly to 63% comparing to 77%  prior to matching. This suggests that our matched dataset is more likely to have exchangeability with our unlabeled test data.
+
+```{r, include=FALSE}
+koi_df = read.csv("KOI.csv")
+test_set = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+test_set = test_set[complete.cases(test_set), ]
+```
+
+```{r pressure, echo=TRUE}
+matched_data_nearest = matched_data_nearest[matched_data_nearest$koi_disposition != "CANDIDATE",]
+write.csv(matched_data_nearest,"matched_data_nearest.csv")
+total = bind_rows(test_set, matched_data_nearest)
+total = total[,1:14]
+```
+
+```{r, echo=TRUE}
+# This chunk is directly taken from file "ConformalWeights"
+set.seed(123)
+new_df = total %>%
+                  mutate(koi_disposition = recode(koi_disposition,
+                                  "CONFIRMED" = "NC",
+                                  "FALSE POSITIVE" = "NC",
+                                  "CANDIDATE" = "C"))
+total$koi_disposition = as.factor(new_df$koi_disposition)
+analysis_df = total[complete.cases(total), ]
+
+trainIndex <- createDataPartition(analysis_df$koi_disposition, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+training <- analysis_df[ trainIndex,]
+testing  <- analysis_df[-trainIndex,]
+
+fitControl <- trainControl(## 10-fold CV
+                           method = "repeatedcv",
+                           number = 10,
+                           classProbs = TRUE,
+                           summaryFunction = twoClassSummary,
+                           ## repeated ten times
+                           repeats = 1)
+
+gbmFit1 <- train(koi_disposition ~ ., data = training, 
+                 metric = "ROC",
+                 method = "gbm", 
+                 trControl = fitControl,
+                 verbose = FALSE)
+
+koi_pred <- predict(gbmFit1, testing)
+#confusionMatrix(data = koi_pred, testing$koi_disposition)
+``` 
+
+Now, we try using the matched data as a holdout set and train a model on the remaining labeled data. When using the matched data as the holdout set, we see a reduction in the accuracy of the gradient boosting classifier. When we initially calculated the accuracy using 10 fold cross validation, we got an accuracy of 90%. When we test the classifier on the matched holdout set, we get a lower level of accuracy at 85%. This is expected because our classifier would not work as well on the test set if there is a distribution shift. Therefore, using a holdout set that is matched to the test data in terms of 4 different covariates seems to get us a more realistic measure of accuracy even if it is lower. However, this method means that we reduce the size of our training set by the points that most resemble the test set which is not ideal as we would like to train the classifier on as much of our training data as possible.
+
+```{r, include=FALSE}
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+```{r}
+matched_data_nearest = matched_data_nearest[matched_data_nearest$koi_disposition != "CANDIDATE",]
+validation_set = matched_data_nearest[,1:14]
+
+validation_set$koi_disposition = as.factor(validation_set$koi_disposition)
+validation_set$koi_disposition <- factor(validation_set$koi_disposition, labels = c(1,0))
+#create training set (excluding validation set)
+index = analysis_df$koi_period  %in% validation_set$koi_period
+train_set = analysis_df[!index,]
+```
+
+```{r}
+# Fitting gradient boosting
+gbmFit1 <- train(koi_disposition ~ ., data = train_set, 
+                 method = "gbm", 
+                 verbose = FALSE)
+koi_pred <- predict(gbmFit1, validation_set)
+#confusionMatrix(data = koi_pred, validation_set$koi_disposition)
+```

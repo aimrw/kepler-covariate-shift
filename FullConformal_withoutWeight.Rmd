@@ -1,0 +1,116 @@
+---
+title: "Simone part"
+author: "Xinmeng Zhang"
+date: "2023-03-02"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+```
+
+
+```{r}
+koi_df = read.csv("KOI.csv")
+
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+```
+
+
+
+```{r}
+test_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+test_df$koi_disposition = as.factor(test_df$koi_disposition)
+test_df = test_df[complete.cases(test_df), ]
+```
+
+
+
+
+```{r}
+set.seed(121212)
+alpha = 0.2
+Y_vals = c(1,0)
+nY = length(Y_vals)
+
+Y = analysis_df
+
+n = nrow(Y)
+train = sort(sample(n,n*.8))
+val = setdiff(1:n,train)
+
+```
+
+
+```{r, warning=FALSE, cache=TRUE}
+# Try full conformal on validation set
+
+model = list()
+p_hat_val = matrix(0,length(val),nY)
+
+
+# We build the logit model with one more validation point iteratively
+
+for (i in 1:length(val)){
+  use_data <- rbind(Y[train,], Y[val[i], ])
+  disposition <- use_data$koi_disposition
+  X <- use_data[, -14]
+  
+  # For each y = 1 or 0
+  for(iY in 1:nY){
+
+    model[[iY]] = glm((disposition==Y_vals[iY])~ra+dec+koi_period+koi_time0bk+
+                    koi_impact+koi_duration+koi_depth+koi_prad+koi_teq+koi_insol+
+                    koi_steff+koi_slogg+koi_srad, data=use_data,family='binomial')
+    p_hat_val[i,iY] = 1/(1+exp(-predict.glm(model[[iY]],tail(X, n = 1))))
+  }
+}
+```
+
+
+
+```{r, warning=FALSE, cache=TRUE}
+# Try on test set
+
+# For simplicity first look at test_df with only 3 rows
+#test_df <- test_df[1:3, ]
+
+model_test = list()
+p_hat_test = matrix(0,nrow(test_df),nY)
+#S_val = matrix(0,nrow(test_df),1)
+#Q_hat = matrix(0,nrow(test_df),1)
+
+
+# We build the logit model with one more test point iteratively 
+for (i in 1:nrow(test_df)){
+  
+  use_data <- rbind(Y, test_df[i, ])
+  disposition <- use_data$koi_disposition
+  X <- use_data[, -14]
+  
+  # For each y = 1 or 0
+  for(iY in 1:nY){
+      
+      disposition[tail(disposition, n=1)] <- iY-1 # Since the disposition for test is unknown
+      
+      model_test[[iY]] = glm((disposition==Y_vals[iY])~ra+dec+koi_period+koi_time0bk+
+                    koi_impact+koi_duration+koi_depth+koi_prad+koi_teq+koi_insol+
+                    koi_steff+koi_slogg+koi_srad, data=use_data,family='binomial')
+      
+      # This might be wrong too
+      p_hat_test[i,iY] = predict.glm(model_test[[iY]],tail(X, n = 1))
+    }
+    
+    # Need to solve this bug
+    S_val = rowSums(p_hat_test[i,] * outer(disposition,Y_vals,'=='))
+    Q_hat <- sort(-S_val)[ceiling((1-alpha)*(nrow(test_df)+1))]
+}
+
+
+predictions = (-p_hat_test <= Q_hat)
+colnames(predictions) = Y_vals
+mean(rowSums(predictions))
+```

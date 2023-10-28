@@ -1,0 +1,102 @@
+---
+title: "WeightedAccuracySimulations"
+output: pdf_document
+date: "2023-03-09"
+---
+
+\pagenumbering{gobble}
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(glmnet)
+library(caret)
+library(gbm)
+```
+
+```{r}
+# Initial data processing
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+
+# Train complex classifier on half_analysis
+half_analysis = analysis_df[1:3000,]
+# Predict the labels on the other half of the labeled data h2_analysis
+h2_analysis = analysis_df[-c(1:3000),]
+# Also subset the unlabeled data
+unlabeled_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+unlabeled_df = unlabeled_df[complete.cases(unlabeled_df), ]
+```
+
+```{r}
+# Initial data processing
+koi_df = read.csv("KOI.csv")
+analysis_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition != "CANDIDATE",]
+analysis_df = analysis_df[complete.cases(analysis_df), ]
+analysis_df$koi_disposition = as.factor(analysis_df$koi_disposition)
+analysis_df$koi_disposition <- factor(analysis_df$koi_disposition, labels = c(1,0))
+
+# Train complex classifier on half_analysis
+half_analysis = analysis_df[1:3000,]
+# Predict the labels on the other half of the labeled data h2_analysis
+h2_analysis = analysis_df[-c(1:3000),]
+# Also subset the unlabeled data
+unlabeled_df = koi_df[c("ra","dec","koi_period","koi_time0bk","koi_impact","koi_duration","koi_depth","koi_prad","koi_teq","koi_insol","koi_steff","koi_slogg","koi_srad","koi_disposition")][koi_df$koi_disposition == "CANDIDATE",]
+unlabeled_df = unlabeled_df[complete.cases(unlabeled_df), ]
+```
+
+```{r}
+gen_synthetic_data = function(df1,df2,unlabeled_df) {
+  x <- model.matrix(koi_disposition ~ .^2, data = df1)[,-1] # remove intercept column
+  y <- df1$koi_disposition
+
+  complex_model <- glmnet(x, y, family = "binomial", alpha = 0.1, lambda = 0.0001)
+  
+  x_pred <- model.matrix(koi_disposition ~ .^2, data = df2)[,-1]
+  h2_analysis$koi_disposition = factor(as.vector(predict(complex_model,x_pred)) > 0.5, labels = c(0,1))
+  
+  x_pred <- model.matrix(koi_disposition ~ .^2, data = unlabeled_df)[,-1]
+  unlabeled_df$koi_disposition = factor(as.vector(predict(complex_model,x_pred)) > 0.5,labels=c(0,1))
+  
+  return(list(h2_analysis,unlabeled_df))
+}
+```
+
+```{r}
+train_model = function(df) {
+  sim_train = h2_analysis[1:1500,]
+  sim_test = h2_analysis[-c(1:1500),]
+x <- model.matrix(koi_disposition ~ ., data = sim_train)[,-1] # remove intercept column
+y <- sim_train$koi_disposition
+set.seed(3)
+simple_model <- glmnet(x, y, family = "binomial", alpha = 0.05, lambda = 0.1)
+}
+```
+
+```{r}
+gen_predictions = function(df) {
+  # make predictions on sim_test data
+  x_test <- model.matrix(koi_disposition ~ ., data = sim_test)[,-1]
+  y_test <- sim_test$koi_disposition
+  pred_prob <- predict(simple_model, x_test, type = "response")
+
+  # classify observations based on a threshold
+  threshold <- 0.5
+  pred_class <- ifelse(pred_prob > threshold, 1, 0)
+
+  # create a confusion matrix and calculate accuracy
+  conf_mat <- table(y_test, pred_class)
+  accuracy <- sum(diag(conf_mat)) / sum(conf_mat)
+  return(list(conf_mat,accuracy))
+}
+```
+
+```{r}
+compare_accuracies = function(x) {
+  
+}
+```
+
+
